@@ -74,10 +74,13 @@ async def crawl_product(product_page_url: str, **kwargs) -> dict:
     return product_information
 
 
-async def process_product(product_page_url: str, dict_writer: AsyncDictWriter, **kwargs) -> None:
+async def process_product(product_page_url: str, dict_writer: AsyncDictWriter, lock: asyncio.locks.Lock,
+                          **kwargs) -> None:
     """Find product information from `product_page_url` and save it to a CSV file."""
     product_information = await crawl_product(product_page_url, **kwargs)
-    await dict_writer.writerow(product_information)
+
+    async with lock:
+        await dict_writer.writerow(product_information)
 
 
 async def crawl_category(category_page_url: str, **kwargs) -> list:
@@ -103,6 +106,7 @@ async def crawl_category(category_page_url: str, **kwargs) -> list:
 
 async def process_category(category_name: str, category_page_url: str, target_dir: str, **kwargs) -> None:
     """Find products of a category, concurrently process those to write data to a CSV file in `target_dir`."""
+    lock = asyncio.Lock()
     async with aiofiles.open(Path(target_dir) / f'{category_name}.csv', mode='w', encoding='utf-8', newline='') as afp:
         dict_writer = AsyncDictWriter(afp, ['universal_ product_code', 'price_excluding_tax', 'price_including_tax',
                                             'number_available', 'product_page_url', 'title', 'description', 'image_url',
@@ -112,8 +116,7 @@ async def process_category(category_name: str, category_page_url: str, target_di
         products_urls = await crawl_category(category_page_url, **kwargs)
         tasks = []
         for product_page_url in products_urls:
-            tasks.append(process_product(product_page_url, dict_writer, **kwargs))
-
+            tasks.append(process_product(product_page_url, dict_writer, lock, **kwargs))
         await asyncio.gather(*tasks)
 
 
@@ -145,4 +148,4 @@ if __name__ == '__main__':
     output_dir = sys.argv[1] if len(sys.argv) > 1 else 'CSV_REPORTS'
     Path(output_dir).mkdir(exist_ok=True)
 
-    asyncio.run(main(output_dir), debug=True)
+    asyncio.run(main(output_dir))
