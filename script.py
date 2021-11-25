@@ -1,27 +1,35 @@
-#! ./env/bin/python
+#!/user/bin/env python3
 
+import asyncio
 import re
-import csv
-import requests
-from bs4 import BeautifulSoup
+from pathlib import Path
 
+import aiofiles
+from aiocsv import AsyncDictWriter
+from aiohttp import ClientSession
+from bs4 import BeautifulSoup
 
 BASE_URL = 'https://books.toscrape.com'
 
 
-def get_product_infos(product_page_url):
-    product_information = {}
-
-    # fetch HTML page
-    response = requests.get(product_page_url)
+async def fetch_html(url: str, client: ClientSession) -> str:
+    """GET request wrapper to fetch HTML page at `url`."""
+    response = await client.get(url)
     response.raise_for_status()
-    response.encoding = 'utf-8'
 
-    soup = BeautifulSoup(response.text, 'html.parser')
+    return await response.text(encoding='utf-8')
 
+
+async def crawl_product(product_page_url: str, **kwargs) -> dict:
+    """Extract product information from `product_page_url`."""
+    html = await fetch_html(product_page_url, **kwargs)
+
+    soup = BeautifulSoup(html, 'html.parser')
+
+    product_information = {}
     # extract data from the table
     table_rows = soup.select_one('.product_page .table').find_all('tr')
-    pcount_regex = re.compile(r'\d+')
+    p_count_re = re.compile(r'\d+')
     for tr in table_rows:
         row_title = tr.th.string
         row_value = tr.td.string
@@ -33,7 +41,7 @@ def get_product_infos(product_page_url):
         elif row_title == 'Price (incl. tax)':
             product_information['price_including_tax'] = row_value
         elif row_title == 'Availability':
-            product_information['number_available'] = int(pcount_regex.search(
+            product_information['number_available'] = int(p_count_re.search(
                 row_value).group())
 
     # extract remainder data
@@ -48,7 +56,7 @@ def get_product_infos(product_page_url):
         product_information['description'] = ''
 
     product_information['image_url'] = BASE_URL + '/' + \
-        soup.select_one('.thumbnail img')['src'].lstrip('../')
+                                       soup.select_one('.thumbnail img')['src'].lstrip('../')
 
     ratings_map = {
         'One': 1,
@@ -66,57 +74,75 @@ def get_product_infos(product_page_url):
     return product_information
 
 
-def get_category_products_url(category_url):
-    products_url = []
+async def process_product(product_page_url: str, dict_writer: AsyncDictWriter, **kwargs) -> None:
+    """Find product information from `product_page_url` and save it to a CSV file."""
+    product_information = await crawl_product(product_page_url, **kwargs)
+    await dict_writer.writerow(product_information)
 
-    url = category_url
+
+async def crawl_category(category_page_url: str, **kwargs) -> list:
+    """Find products of a category from `category_page_url`."""
+    products_urls = []
+
+    url = category_page_url
     while url:
-        response = requests.get(url)
-        response.raise_for_status()
-        response.encoding = 'utf-8'
+        html = await fetch_html(url, **kwargs)
 
-        soup = BeautifulSoup(response.text, 'html.parser')
+        soup = BeautifulSoup(html, 'html.parser')
         page_urls = [BASE_URL + '/catalogue/' + article.h3.a['href']
-                     .lstrip('../') for article in soup.select('.product_pod')]
+            .lstrip('../') for article in soup.select('.product_pod')]
 
-        products_url += page_urls
-        next = soup.select_one('.next')
-        if not next:
+        products_urls += page_urls
+        next_page_url = soup.select_one('.next')
+        if not next_page_url:
             break
-        url = category_url + '/' + next.a['href']
+        url = category_page_url + '/' + next_page_url.a['href']
 
-    return products_url
-
-
-def get_site_categories_url(base_url=BASE_URL):
-    response = requests.get(base_url)
-    response.raise_for_status()
-    response.encoding = 'utf-8'
-
-    soup = BeautifulSoup(response.text, 'html.parser')
-    category_links = [BASE_URL + '/' + a['href'].rstrip('/index.html')
-                      for a in soup.select('.side_categories .nav-list ul a')]
-
-    return category_links
+    return products_urls
 
 
-# prepare CSV file
-output_file = open('report.csv', 'w')
-output_dict_writer = csv.DictWriter(output_file, ['universal_ product_code', 'price_excluding_tax', 'price_including_tax',
-                                    'number_available', 'product_page_url', 'title', 'description', 'image_url', 'review_rating', 'category'])
-output_dict_writer.writeheader()
+async def process_category(category_name: str, category_page_url: str, target_dir: str, **kwargs) -> None:
+    """Find products of a category, concurrently process those to write data to a CSV file in `target_dir`."""
+    async with aiofiles.open(Path(target_dir) / f'{category_name}.csv', mode='w', encoding='utf-8', newline='') as afp:
+        dict_writer = AsyncDictWriter(afp, ['universal_ product_code', 'price_excluding_tax', 'price_including_tax',
+                                            'number_available', 'product_page_url', 'title', 'description', 'image_url',
+                                            'review_rating', 'category'])
+        await dict_writer.writeheader()
 
-# retrieve data
-categories_url = get_site_categories_url()
-for category_page_url in categories_url:
-    # print(f'Index product from category {category_page_url}')
-    products_url = get_category_products_url(
-        category_page_url)
+        products_urls = await crawl_category(category_page_url, **kwargs)
+        tasks = []
+        for product_page_url in products_urls:
+            tasks.append(process_product(product_page_url, dict_writer, **kwargs))
 
-    for product_page_url in products_url:
-        # print(f'\tRetrieving data from product {product_page_url}')
-        product_information = get_product_infos(product_page_url)
-        output_dict_writer.writerow(product_information)
+        await asyncio.gather(*tasks)
 
-# byebye
-output_file.close()
+
+async def crawl_categories_urls(home_page_url: str = BASE_URL, **kwargs) -> dict:
+    """Find categories from the `home_page_url`."""
+    html = await fetch_html(home_page_url, **kwargs)
+
+    soup = BeautifulSoup(html, 'html.parser')
+    categories_urls = {a.get_text(strip=True): BASE_URL + '/' + a['href'].rstrip('/index.html')
+                       for a in soup.select('.side_categories .nav-list ul a')}
+
+    return categories_urls
+
+
+async def main(target_dir: str) -> None:
+    """Concurrently extract data from the website's categories and write it to `target_dir`."""
+    async with ClientSession() as client:
+        categories_urls = await crawl_categories_urls(client=client)
+
+        tasks = []
+        for category_name, category_page_url in categories_urls.items():
+            tasks.append(process_category(category_name, category_page_url, target_dir, client=client))
+        await asyncio.gather(*tasks)
+
+
+if __name__ == '__main__':
+    import sys
+
+    output_dir = sys.argv[1] if len(sys.argv) > 1 else 'CSV_REPORTS'
+    Path(output_dir).mkdir(exist_ok=True)
+
+    asyncio.run(main(output_dir), debug=True)

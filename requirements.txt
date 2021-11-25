@@ -16,3 +16,8 @@ toml==0.10.2
 typing-extensions==4.0.0
 urllib3==1.26.7
 wrapt==1.13.3
+
+tqdm~=4.62.3
+aiohttp~=3.8.1
+aiofiles~=0.7.0
+aiocsv~=1.2.1
