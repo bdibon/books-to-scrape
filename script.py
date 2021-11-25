@@ -5,11 +5,14 @@ import re
 from pathlib import Path
 
 import aiofiles
+import aiohttp
 from aiocsv import AsyncDictWriter
 from aiohttp import ClientSession
 from bs4 import BeautifulSoup
+from tqdm.asyncio import tqdm
 
 BASE_URL = 'https://books.toscrape.com'
+IMAGE_DIRECTORY = "images"
 
 
 async def fetch_html(url: str, client: ClientSession) -> str:
@@ -18,6 +21,13 @@ async def fetch_html(url: str, client: ClientSession) -> str:
     response.raise_for_status()
 
     return await response.text(encoding='utf-8')
+
+
+async def fetch_product_image(url: str, client: ClientSession) -> aiohttp.ClientResponse:
+    """GET request wrapper to fetch image at `url`"""
+    response = await client.get(url)
+    response.raise_for_status()
+    return response
 
 
 async def crawl_product(product_page_url: str, **kwargs) -> dict:
@@ -35,7 +45,7 @@ async def crawl_product(product_page_url: str, **kwargs) -> dict:
         row_value = tr.td.string
 
         if row_title == 'UPC':
-            product_information['universal_ product_code'] = row_value
+            product_information['universal_product_code'] = row_value
         elif row_title == 'Price (excl. tax)':
             product_information['price_excluding_tax'] = row_value
         elif row_title == 'Price (incl. tax)':
@@ -75,9 +85,17 @@ async def crawl_product(product_page_url: str, **kwargs) -> dict:
 
 
 async def process_product(product_page_url: str, dict_writer: AsyncDictWriter, lock: asyncio.locks.Lock,
+                          target_dir: str,
                           **kwargs) -> None:
-    """Find product information from `product_page_url` and save it to a CSV file."""
+    """Find product information from `product_page_url` and save it to a CSV file. Download associated image."""
     product_information = await crawl_product(product_page_url, **kwargs)
+
+    product_image = await fetch_product_image(product_information['image_url'], **kwargs)
+    file_extension = '.' + product_image.content_type.lstrip('image/')
+    image_name = product_information['category'].lower().replace(' ', '_') + '_' + product_information[
+        'universal_product_code'] + file_extension
+    async with aiofiles.open(Path(target_dir) / IMAGE_DIRECTORY / image_name, mode='wb') as image_file:
+        await image_file.write(await product_image.read())
 
     async with lock:
         await dict_writer.writerow(product_information)
@@ -104,11 +122,11 @@ async def crawl_category(category_page_url: str, **kwargs) -> list:
     return products_urls
 
 
-async def process_category(category_name: str, category_page_url: str, target_dir: str, **kwargs) -> None:
+async def process_category(category_name: str, category_page_url: str, target_dir: str, pbar: tqdm, **kwargs) -> None:
     """Find products of a category, concurrently process those to write data to a CSV file in `target_dir`."""
     lock = asyncio.Lock()
     async with aiofiles.open(Path(target_dir) / f'{category_name}.csv', mode='w', encoding='utf-8', newline='') as afp:
-        dict_writer = AsyncDictWriter(afp, ['universal_ product_code', 'price_excluding_tax', 'price_including_tax',
+        dict_writer = AsyncDictWriter(afp, ['universal_product_code', 'price_excluding_tax', 'price_including_tax',
                                             'number_available', 'product_page_url', 'title', 'description', 'image_url',
                                             'review_rating', 'category'])
         await dict_writer.writeheader()
@@ -116,8 +134,9 @@ async def process_category(category_name: str, category_page_url: str, target_di
         products_urls = await crawl_category(category_page_url, **kwargs)
         tasks = []
         for product_page_url in products_urls:
-            tasks.append(process_product(product_page_url, dict_writer, lock, **kwargs))
+            tasks.append(process_product(product_page_url, dict_writer, lock, target_dir, **kwargs))
         await asyncio.gather(*tasks)
+    pbar.update(1)
 
 
 async def crawl_categories_urls(home_page_url: str = BASE_URL, **kwargs) -> dict:
@@ -136,16 +155,19 @@ async def main(target_dir: str) -> None:
     async with ClientSession() as client:
         categories_urls = await crawl_categories_urls(client=client)
 
+        pbar = tqdm(total=len(categories_urls), ascii=True)
         tasks = []
         for category_name, category_page_url in categories_urls.items():
-            tasks.append(process_category(category_name, category_page_url, target_dir, client=client))
+            tasks.append(process_category(category_name, category_page_url, target_dir, pbar, client=client))
         await asyncio.gather(*tasks)
+        pbar.close()
 
 
 if __name__ == '__main__':
     import sys
 
-    output_dir = sys.argv[1] if len(sys.argv) > 1 else 'CSV_REPORTS'
+    output_dir = sys.argv[1] if len(sys.argv) > 1 else 'books-report'
     Path(output_dir).mkdir(exist_ok=True)
+    Path(output_dir).joinpath(IMAGE_DIRECTORY).mkdir(exist_ok=True)
 
     asyncio.run(main(output_dir))
