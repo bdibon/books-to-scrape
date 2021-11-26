@@ -166,7 +166,9 @@ async def main(target_dir: str) -> None:
 if __name__ == '__main__':
     import sys
 
-    output_dir = sys.argv[1] if len(sys.argv) > 1 else 'books-report'
+    assert sys.version_info >= (3, 7), f"{__file__} requires Python 3.7+"
+
+    output_dir = sys.argv[1] if len(sys.argv) > 1 else 'report'
     Path(output_dir).mkdir(exist_ok=True)
     Path(output_dir).joinpath(IMAGE_DIRECTORY).mkdir(exist_ok=True)
 
