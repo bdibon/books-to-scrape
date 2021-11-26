@@ -19,7 +19,7 @@ The data points we are interested in for each book are:
 
 These will be stored in a different CSV file for each category: `output_dir/Category Name.csv`. By default `output_dir=report`, it can be changed by passing an argument to the script `./script custom_dir`.
 
-The script will also download the cover image of each book in the `output_dir/images` folder, images name will be formatted as follows `upc_category.jpeg`.
+The script will also download the cover image of each book in the `output_dir/images` folder, images name will be formatted as follows `category_upc.jpeg`.
 
 ## How to run it
 
@@ -31,7 +31,7 @@ Note you must have Python version 3.7 minimum installed, this is because the scr
 
 ### Setup a virtual env
 
-* It is recommended to setup a virtal environment before runnning the script, in the repository folder execute `python -m venv env`
+* It is recommended to setup a virtual environment before runnning the script, in the repository folder execute `python -m venv env`
 * Activate the virtual environment `source env/bin/activate`
 
 ### Install dependencies
@@ -42,4 +42,4 @@ Note you must have Python version 3.7 minimum installed, this is because the scr
 
 `./script.py [output_dir]`
 
-You should find a new directory (by default in the directory where the script resides) that contains a bunch of CSV files matching the different book categories of the site and  n images folder populated with the cover of the books.
+You should find a new directory (by default in the directory where the script resides) that contains a bunch of CSV files matching the different book categories of the site and an `images` folder populated with the cover of the books.
